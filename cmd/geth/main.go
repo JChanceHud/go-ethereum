@@ -138,6 +138,7 @@ var (
 		utils.GoerliFlag,
 		utils.VMEnableDebugFlag,
 		utils.NetworkIdFlag,
+		utils.ChainIdFlag,
 		utils.EthStatsURLFlag,
 		utils.FakePoWFlag,
 		utils.NoCompactionFlag,
@@ -166,6 +167,8 @@ var (
 		utils.RollupEnableVerifierFlag,
 		utils.RollupAddressManagerOwnerAddressFlag,
 		utils.RollupStateDumpPathFlag,
+		utils.RollupDiffDbFlag,
+		utils.RollupDisableTransfersFlag,
 	}
 
 	rpcFlags = []cli.Flag{
@@ -451,6 +454,11 @@ func startNode(ctx *cli.Context, stack *node.Node) {
 		}
 		if err := ethereum.StartMining(threads); err != nil {
 			utils.Fatalf("Failed to start mining: %v", err)
+		}
+		if ctx.GlobalBool(utils.Eth1SyncServiceEnable.Name) {
+			if err := ethereum.SyncService().Start(); err != nil {
+				utils.Fatalf("Failed to start syncservice: %v", err)
+			}
 		}
 	}
 }

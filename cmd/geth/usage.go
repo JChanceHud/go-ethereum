@@ -79,6 +79,8 @@ var AppHelpFlagGroups = []flagGroup{
 			utils.RollupAddressManagerOwnerAddressFlag,
 			utils.RollupEnableVerifierFlag,
 			utils.RollupStateDumpPathFlag,
+			utils.RollupDiffDbFlag,
+			utils.RollupDisableTransfersFlag,
 		},
 	},
 	{
@@ -91,6 +93,7 @@ var AppHelpFlagGroups = []flagGroup{
 			utils.NoUSBFlag,
 			utils.SmartCardDaemonPathFlag,
 			utils.NetworkIdFlag,
+			utils.ChainIdFlag,
 			utils.TestnetFlag,
 			utils.RinkebyFlag,
 			utils.GoerliFlag,

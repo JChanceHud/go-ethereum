@@ -31,6 +31,8 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
+const headerCacheSize = 2048
+
 // Interface used for communicating with Ethereum 1 nodes
 type EthereumClient interface {
 	ChainID(context.Context) (*big.Int, error)
@@ -182,7 +184,7 @@ type SyncService struct {
 	Eth1Data                         Eth1Data
 	LatestL1ToL2                     LatestL1ToL2
 	confirmationDepth                uint64
-	HeaderCache                      [2048]*types.Header
+	HeaderCache                      [headerCacheSize]*types.Header
 	sequencerIngestTicker            *time.Ticker
 	ctcDeployHeight                  *big.Int
 	AddressResolverAddress           common.Address
@@ -243,7 +245,7 @@ func NewSyncService(ctx context.Context, cfg Config, txpool *core.TxPool, bc *co
 		clearTransactionsTicker:          time.NewTicker(time.Hour),
 		sequencerIngestTicker:            time.NewTicker(15 * time.Second),
 		txCache:                          NewTransactionCache(),
-		HeaderCache:                      [2048]*types.Header{},
+		HeaderCache:                      [headerCacheSize]*types.Header{},
 	}
 	return &service, nil
 }
@@ -386,7 +388,7 @@ func (s *SyncService) getCommonAncestor(index *big.Int, list *[]*types.Header) (
 	if number == s.ctcDeployHeight.Uint64() {
 		return number, nil
 	}
-	cached := s.HeaderCache[number%2048]
+	cached := s.HeaderCache[number%headerCacheSize]
 	if cached != nil && bytes.Equal(header.Hash().Bytes(), cached.Hash().Bytes()) {
 		return number, nil
 	}
@@ -715,33 +717,6 @@ func (s *SyncService) checkSyncStatus() error {
 // processHistoricalLogs will sync block by block of the eth1 chain, looking for
 // events it can process.
 func (s *SyncService) processHistoricalLogs() error {
-	// Fetch the state of the LatestL1ToL2 data based on the last processed
-	// ETH1Data. There is no way to directly get the queue length, so get the
-	// next queue index and the number of pending queue elements. If there are
-	// pending queue elements, add them to the next queue index to get the
-	// length of the queue. Get the queue element at that index and set its
-	// block number and timestamp as the LatestL1ToL2 data
-	opts := bind.CallOpts{Context: s.ctx, BlockNumber: new(big.Int).SetUint64(s.Eth1Data.BlockHeight)}
-	index, err := s.ctcCaller.GetNextQueueIndex(&opts)
-	if err != nil {
-		return fmt.Errorf("Cannot fetch next queue index from ctc contract at height %d: %w", s.Eth1Data.BlockHeight, err)
-	}
-	if index.Uint64() > 0 {
-		pending, err := s.ctcCaller.GetNumPendingQueueElements(&opts)
-		if err != nil {
-			return fmt.Errorf("Cannot fetch num pending queue elements from ctc contract at height %d: %w", s.Eth1Data.BlockHeight, err)
-		}
-		if pending.Uint64() > 0 {
-			index = index.Add(index, pending)
-		}
-		element, err := s.ctcCaller.GetQueueElement(&opts, index)
-		if err != nil {
-			return fmt.Errorf("Cannot fetch queue element from ctc contract at height %d: %w", s.Eth1Data.BlockHeight, err)
-		}
-		s.SetLatestL1Timestamp(element.Timestamp.Uint64())
-		s.SetLatestL1BlockNumber(element.BlockNumber.Uint64())
-	}
-
 	errCh := make(chan error)
 	go func(c chan error) {
 		log.Info("Processing historical logs")
@@ -754,37 +729,97 @@ func (s *SyncService) processHistoricalLogs() error {
 				time.Sleep(1 * time.Second)
 				continue
 			}
+
 			// Check to see if the tip is the last processed block height
-			tipHeight := tip.Number.Uint64()
-			if tipHeight == s.Eth1Data.BlockHeight {
+			tipHeight := tip.Number.Uint64() - headerCacheSize
+
+			// Break when we are up to the header cache size or if the tip
+			// number is less than the header cache size. This protects from
+			// an undeflow.
+			if tipHeight == s.Eth1Data.BlockHeight || tip.Number.Uint64() < headerCacheSize {
 				log.Info("Done fetching historical logs", "height", tipHeight)
 				errCh <- nil
 			}
+
 			if tipHeight < s.Eth1Data.BlockHeight {
 				log.Error("Historical block processing tip is earlier than last processed block height")
 				errCh <- fmt.Errorf("Eth1 chain not synced: height %d", tipHeight)
 			}
 
-			// Fetch the next header and process it
-			header, err := s.ethclient.HeaderByNumber(s.ctx, new(big.Int).SetUint64(s.Eth1Data.BlockHeight+1))
-			if err != nil {
-				errCh <- fmt.Errorf("Cannot fetch header by number %d: %w", s.Eth1Data.BlockHeight+1, err)
+			// The above checks prevent `fromBlock` from being
+			// greater than the tip
+			fromBlock := s.Eth1Data.BlockHeight + 1
+			// Use the tip height as the max value
+			toBlock := s.Eth1Data.BlockHeight + 1000
+			if tipHeight < toBlock {
+				toBlock = tipHeight
 			}
-			if header.Number == nil {
-				errCh <- fmt.Errorf("Header has nil number")
-			}
-			headerHeight := header.Number.Uint64()
-			headerHash := header.Hash()
 
-			eth1data, err := s.ProcessETHBlock(s.ctx, header)
+			query := ethereum.FilterQuery{
+				Addresses: []common.Address{
+					s.CanonicalTransactionChainAddress,
+				},
+				FromBlock: new(big.Int).SetUint64(fromBlock),
+				ToBlock:   new(big.Int).SetUint64(toBlock),
+				Topics:    [][]common.Hash{},
+			}
+
+			logs, err := s.logClient.FilterLogs(s.ctx, query)
 			if err != nil {
-				log.Error("Cannot process block", "message", err.Error(), "height", headerHeight, "hash", headerHash.Hex())
-				time.Sleep(1 * time.Second)
+				log.Error("Cannot query logs", "message", err)
 				continue
 			}
-			s.Eth1Data = eth1data
-			log.Info("Processed historical block", "height", headerHeight, "hash", headerHash.Hex())
-			s.doneProcessing <- headerHeight
+			if len(logs) == 0 {
+				height := s.Eth1Data.BlockHeight + 1000
+				if tipHeight < height {
+					height = tipHeight
+				}
+
+				header, err := s.ethclient.HeaderByNumber(s.ctx, new(big.Int).SetUint64(height))
+				if err != nil {
+					log.Debug("Problem fetching block", "messsage", err)
+					continue
+				}
+				headerHeight := header.Number.Uint64()
+				headerHash := header.Hash()
+
+				eth1data, err := s.ProcessETHBlock(s.ctx, header)
+				if err != nil {
+					log.Error("Cannot process block", "message", err.Error(), "height", headerHeight, "hash", headerHash.Hex())
+					continue
+				}
+				s.Eth1Data = eth1data
+				log.Info("Processed historical block", "height", headerHeight, "hash", headerHash.Hex())
+				s.doneProcessing <- headerHeight
+			} else {
+				sort.Sort(LogsByIndex(logs))
+				for _, ethlog := range logs {
+					// Prevent logs emitted from other contracts from being processed
+					if !bytes.Equal(ethlog.Address.Bytes(), s.CanonicalTransactionChainAddress.Bytes()) {
+						continue
+					}
+					if err := s.ProcessLog(s.ctx, ethlog); err != nil {
+						log.Error("Cannot process historical log", "message", err)
+						continue
+					}
+
+					s.Eth1Data = Eth1Data{
+						BlockHash:   ethlog.BlockHash,
+						BlockHeight: ethlog.BlockNumber,
+					}
+
+					log.Info("Processed historical block", "height", ethlog.BlockNumber, "hash", ethlog.BlockHash.Hex())
+					s.doneProcessing <- ethlog.BlockNumber
+				}
+			}
+			// Set the last processed header in the cache
+			for {
+				processed, err := s.ethclient.HeaderByNumber(s.ctx, new(big.Int).SetUint64(toBlock))
+				if err == nil {
+					s.HeaderCache[processed.Number.Uint64()%headerCacheSize] = processed
+					break
+				}
+			}
 		}
 	}(errCh)
 
@@ -822,12 +857,6 @@ func (s *SyncService) ProcessETHBlock(ctx context.Context, header *types.Header)
 		log.Info("Reorganize cleared transactions from cache", "count", count)
 	}
 
-	// This should never happen and means that historical logs need to be
-	// processed.
-	if blockHeight > s.Eth1Data.BlockHeight+1 {
-		return s.Eth1Data, fmt.Errorf("Unexpected future block at height %d", blockHeight)
-	}
-
 	// Create a filter for all logs from the ctc at a specific block hash
 	query := ethereum.FilterQuery{
 		Addresses: []common.Address{
@@ -835,7 +864,7 @@ func (s *SyncService) ProcessETHBlock(ctx context.Context, header *types.Header)
 		},
 		// currently unsupported in hardhat
 		// see: https://github.com/nomiclabs/hardhat/pull/948/
-		//BlockHash: &blockHash
+		//BlockHash: &blockHash,
 		FromBlock: header.Number,
 		ToBlock:   header.Number,
 		Topics:    [][]common.Hash{},
@@ -872,7 +901,7 @@ func (s *SyncService) ProcessETHBlock(ctx context.Context, header *types.Header)
 	// Write to the database for term persistence
 	rawdb.WriteHeadEth1HeaderHash(s.db, header.Hash())
 	rawdb.WriteHeadEth1HeaderHeight(s.db, blockHeight)
-	s.HeaderCache[blockHeight%2048] = header
+	s.HeaderCache[blockHeight%headerCacheSize] = header
 
 	return Eth1Data{
 		BlockHash:   blockHash,
@@ -1225,6 +1254,12 @@ func (s *SyncService) ProcessQueueBatchAppendedLog(ctx context.Context, ethlog t
 		return fmt.Errorf("Unable to parse queue batch appended log data: %w", err)
 	}
 	log.Debug("Queue Batch Appended Event Log", "startingQueueIndex", event.StartingQueueIndex.Uint64(), "numQueueElements", event.NumQueueElements.Uint64(), "totalElements", event.TotalElements.Uint64())
+
+	// Disable queue batch appended for minnet
+	if true {
+		log.Debug("Queue batch append disabled")
+		return nil
+	}
 
 	start := event.StartingQueueIndex.Uint64()
 	end := start + event.NumQueueElements.Uint64()

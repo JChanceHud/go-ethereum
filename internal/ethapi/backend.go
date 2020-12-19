@@ -28,6 +28,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/diffdb"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
@@ -83,7 +84,6 @@ type Backend interface {
 	SubscribeRemovedLogsEvent(ch chan<- core.RemovedLogsEvent) event.Subscription
 
 	// Optimism-specific API
-	SendTxs(ctx context.Context, signedTxs []*types.Transaction) []error
 	SetTimestamp(timestamp int64)
 	IsVerifier() bool
 	RollupTransactionSender() *common.Address
@@ -95,6 +95,8 @@ type Backend interface {
 
 	ChainConfig() *params.ChainConfig
 	CurrentBlock() *types.Block
+
+	GetDiff(*big.Int) (diffdb.Diff, error)
 }
 
 func GetAPIs(apiBackend Backend) []rpc.API {

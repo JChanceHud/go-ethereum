@@ -30,6 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/diffdb"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -79,6 +80,10 @@ func (b *LesApiBackend) ChainConfig() *params.ChainConfig {
 
 func (b *LesApiBackend) CurrentBlock() *types.Block {
 	return types.NewBlockWithHeader(b.eth.BlockChain().CurrentHeader())
+}
+
+func (b *LesApiBackend) GetDiff(*big.Int) (diffdb.Diff, error) {
+	return nil, errors.New("Diffs not supported in light client mode")
 }
 
 func (b *LesApiBackend) SetHead(number uint64) {
@@ -203,10 +208,6 @@ func (b *LesApiBackend) GetEVM(ctx context.Context, msg core.Message, state *sta
 
 func (b *LesApiBackend) SendTx(ctx context.Context, signedTx *types.Transaction) error {
 	return b.eth.txPool.Add(ctx, signedTx)
-}
-
-func (b *LesApiBackend) SendTxs(ctx context.Context, signedTxs []*types.Transaction) []error {
-	return b.eth.txPool.AddBatch(ctx, signedTxs)
 }
 
 func (b *LesApiBackend) SetTimestamp(timestamp int64) {

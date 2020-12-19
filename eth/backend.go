@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -188,7 +189,10 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 			TrieTimeLimit:       config.TrieTimeout,
 		}
 	)
-	eth.blockchain, err = core.NewBlockChain(chainDb, cacheConfig, chainConfig, eth.engine, vmConfig, eth.shouldPreserve)
+
+	// Save the diffdb under chaindata/diffdb
+	diffdbPath := filepath.Join(ctx.ResolvePath("chaindata"), "diffdb")
+	eth.blockchain, err = core.NewBlockChainWithDiffDb(chainDb, cacheConfig, chainConfig, eth.engine, vmConfig, eth.shouldPreserve, diffdbPath, config.DiffDbCache)
 	if err != nil {
 		return nil, err
 	}
@@ -222,13 +226,12 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	eth.miner = miner.New(eth, &config.Miner, chainConfig, eth.EventMux(), eth.engine, eth.isLocalBlock)
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 
-	eth.APIBackend = &EthAPIBackend{ctx.ExtRPCEnabled(), eth, nil, config.Rollup.IsVerifier}
+	eth.APIBackend = &EthAPIBackend{ctx.ExtRPCEnabled(), eth, nil, config.Rollup.IsVerifier, config.Rollup.DisableTransfers}
 	gpoParams := config.GPO
 	if gpoParams.Default == nil {
 		gpoParams.Default = config.Miner.GasPrice
 	}
 	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, gpoParams)
-
 	return eth, nil
 }
 
@@ -537,13 +540,6 @@ func (s *Ethereum) Start(srvr *p2p.Server) error {
 
 	// Start the RPC service
 	s.netRPCService = ethapi.NewPublicNetAPI(srvr, s.NetVersion())
-
-	// Start the sync service
-	err := s.syncService.Start()
-	if err != nil {
-		return fmt.Errorf("unable to start syncservice: %w", err)
-	}
-
 	return nil
 }
 

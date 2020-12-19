@@ -169,6 +169,11 @@ var (
 		Value:  eth.DefaultConfig.NetworkId,
 		EnvVar: "NETWORK_ID",
 	}
+	ChainIdFlag = cli.Uint64Flag{
+		Name:   "chainid",
+		Usage:  "Chain ID identifier",
+		EnvVar: "CHAIN_ID",
+	}
 	TestnetFlag = cli.BoolFlag{
 		Name:  "testnet",
 		Usage: "Ropsten network: pre-configured proof-of-work test network",
@@ -421,9 +426,10 @@ var (
 		Usage: "Comma separated HTTP URL list to notify of new work packages",
 	}
 	MinerGasTargetFlag = cli.Uint64Flag{
-		Name:  "miner.gastarget",
-		Usage: "Target gas floor for mined blocks",
-		Value: eth.DefaultConfig.Miner.GasFloor,
+		Name:   "miner.gastarget",
+		Usage:  "Target gas floor for mined blocks",
+		Value:  eth.DefaultConfig.Miner.GasFloor,
+		EnvVar: "TARGET_GAS_LIMIT",
 	}
 	MinerLegacyGasTargetFlag = cli.Uint64Flag{
 		Name:   "targetgaslimit",
@@ -852,6 +858,17 @@ var (
 		Value:  eth.DefaultConfig.Rollup.StateDumpPath,
 		EnvVar: "ROLLUP_STATE_DUMP_PATH",
 	}
+	RollupDiffDbFlag = cli.Uint64Flag{
+		Name:   "rollup.diffdbcache",
+		Usage:  "Number of diffdb batch updates",
+		Value:  eth.DefaultConfig.DiffDbCache,
+		EnvVar: "ROLLUP_DIFFDB_CACHE",
+	}
+	RollupDisableTransfersFlag = cli.BoolFlag{
+		Name:   "rollup.disabletransfers",
+		Usage:  "Disable Transfers",
+		EnvVar: "ROLLUP_DISABLE_TRANSFERS",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -1112,11 +1129,6 @@ func setEth1(ctx *cli.Context, cfg *rollup.Config) {
 	if ctx.GlobalIsSet(Eth1SyncServiceEnable.Name) {
 		cfg.Eth1SyncServiceEnable = ctx.GlobalBool(Eth1SyncServiceEnable.Name)
 	}
-	// Check for both the legacy and standard gas target flags, if both are
-	// set then use the standard flag.
-	if ctx.GlobalIsSet(MinerLegacyGasTargetFlag.Name) {
-		cfg.GasLimit = ctx.GlobalUint64(MinerGasTargetFlag.Name)
-	}
 	if ctx.GlobalIsSet(MinerGasTargetFlag.Name) {
 		cfg.GasLimit = ctx.GlobalUint64(MinerGasTargetFlag.Name)
 	}
@@ -1154,6 +1166,9 @@ func setRollup(ctx *cli.Context, cfg *rollup.Config) {
 		cfg.StateDumpPath = ctx.GlobalString(RollupStateDumpPathFlag.Name)
 	} else {
 		cfg.StateDumpPath = eth.DefaultConfig.Rollup.StateDumpPath
+	}
+	if ctx.GlobalIsSet(RollupDisableTransfersFlag.Name) {
+		cfg.DisableTransfers = true
 	}
 }
 
@@ -1617,6 +1632,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	setEth1(ctx, &cfg.Rollup)
 	setRollup(ctx, &cfg.Rollup)
 
+	if ctx.GlobalIsSet(RollupDiffDbFlag.Name) {
+		cfg.DiffDbCache = ctx.GlobalUint64(RollupDiffDbFlag.Name)
+	}
 	if ctx.GlobalIsSet(SyncModeFlag.Name) {
 		cfg.SyncMode = *GlobalTextMarshaler(ctx, SyncModeFlag.Name).(*downloader.SyncMode)
 	}
@@ -1704,10 +1722,21 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 		}
 		log.Info("Using developer account", "address", developer.Address)
 
+		// Allow for a configurable chain id
+		var chainID *big.Int
+		if ctx.GlobalIsSet(ChainIdFlag.Name) {
+			id := ctx.GlobalUint64(ChainIdFlag.Name)
+			chainID = new(big.Int).SetUint64(id)
+		}
+
+		gasLimit := cfg.Rollup.GasLimit
+		if gasLimit == 0 {
+			gasLimit = params.GenesisGasLimit
+		}
 		xdomainAddress := cfg.Rollup.L1CrossDomainMessengerAddress
 		addrManagerOwnerAddress := cfg.Rollup.AddressManagerOwnerAddress
 		stateDumpPath := cfg.Rollup.StateDumpPath
-		cfg.Genesis = core.DeveloperGenesisBlock(uint64(ctx.GlobalInt(DeveloperPeriodFlag.Name)), developer.Address, xdomainAddress, addrManagerOwnerAddress, stateDumpPath)
+		cfg.Genesis = core.DeveloperGenesisBlock(uint64(ctx.GlobalInt(DeveloperPeriodFlag.Name)), developer.Address, xdomainAddress, addrManagerOwnerAddress, stateDumpPath, chainID, gasLimit)
 		if !ctx.GlobalIsSet(MinerGasPriceFlag.Name) && !ctx.GlobalIsSet(MinerLegacyGasPriceFlag.Name) {
 			cfg.Miner.GasPrice = big.NewInt(1)
 		}
