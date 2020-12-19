@@ -731,7 +731,8 @@ func (s *SyncService) processHistoricalLogs() error {
 			}
 
 			// Check to see if the tip is the last processed block height
-			tipHeight := tip.Number.Uint64() - headerCacheSize
+			//tipHeight := tip.Number.Uint64() - headerCacheSize
+			tipHeight := tip.Number.Uint64()
 
 			// Break when we are up to the header cache size or if the tip
 			// number is less than the header cache size. This protects from
