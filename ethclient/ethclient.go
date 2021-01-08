@@ -339,6 +339,19 @@ func (ec *Client) NetworkID(ctx context.Context) (*big.Int, error) {
 	return version, nil
 }
 
+// BlockNumber returns the latest block number
+func (ec *Client) BlockNumber(ctx context.Context) (*big.Int, error) {
+	var num string
+	if err := ec.c.CallContext(ctx, &num, "eth_blockNumber"); err != nil {
+		return nil, err
+	}
+	blockNumber, err := hexutil.DecodeBig(num)
+	if err != nil {
+		return nil, err
+	}
+	return blockNumber, nil
+}
+
 // BalanceAt returns the wei balance of the given account.
 // The block number can be nil, in which case the balance is taken from the latest known block.
 func (ec *Client) BalanceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error) {

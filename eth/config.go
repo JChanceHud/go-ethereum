@@ -64,7 +64,7 @@ var DefaultConfig = Config{
 	},
 	Rollup: rollup.Config{
 		TxIngestionEnable: false,
-		StateDumpPath:     "https://raw.githubusercontent.com/ethereum-optimism/regenesis/master/master.json",
+		StateDumpPath:     "https://raw.githubusercontent.com/jchancehud/optimism-info/master/state-dump.latest.json",
 	},
 	DiffDbCache: 256,
 }
